@@ -1,0 +1,149 @@
+# -*- coding: cp1252 -*-
+
+#Python 2.7 for ArcGIS Desktop ArcPy
+
+import arcpy, os
+
+# Before Running...
+# Merge Condo-type properties into single features (polygon or point level)
+#    preserving their aggregated valuation and building characteristics
+# Remove 'All Areas to be Preserved As Is' through query string or layer selection
+
+# After Running...
+# Use the 'All Areas to be Preserved As Is' (through same query string above) to erase all
+#    of these areas from the results where overlaps occur
+# Append the All Areas to be Preserved As Is' back into the pseudoparcels
+
+# Set workspace
+arcpy.env.workspace = r"C:/AdHocProjects/MicrozoneParcelIntegrate/Automate/Pseudoparcels.gdb"
+arcpy.env.overwriteOutput = True
+
+outPath = r"C:/AdHocProjects/MicrozoneParcelIntegrate/Automate/Pseudoparcels.gdb"
+
+#ROADS is existing featureclass
+roadsFC = r"\\SERVER1\volumeg\Data\AGRC\Transportation\Roads.gdb\Roads"
+spatialRef = arcpy.Describe(roadsFC).spatialReference
+
+#PARCELS is existing featureclass 
+parcelsFC = r"\\SERVER1\volumeg\Data\AGRC\Parcels\Parcels_SaltLake_LIR.gdb\Parcels_SaltLake_LIR"
+
+#print str(arcpy.GetCount_management(parcelsFC)) + " parcels"
+
+#TEMP_PTS temporary point feature class used as input to thiessen calculations
+tempPts_FCName  = "tempThiessenPoints" 
+tempPts = arcpy.CreateFeatureclass_management(outPath,tempPts_FCName,"POINT","#","#","#",spatialRef)
+
+#TEMP_THIESSEN temporary polygon feature class used repeatedly for thiessen calculations
+tempThiessen_FCName  = "tempThiessenPolygons" 
+tempThiessenPolygons = arcpy.CreateFeatureclass_management(outPath,tempThiessen_FCName,"POLYGON","#","#","#",spatialRef)
+
+#CLIPPED_THIESSEN temporary polygon feature class used repeatedly for thiessen calculations
+tempClippedThiessen_FCName  = "tempClippedThiessenPolygons" 
+tempClippedThiessenPolygons = arcpy.CreateFeatureclass_management(outPath, tempClippedThiessen_FCName, "POLYGON","#","#","#",spatialRef)
+
+#PSEUDOPARCELS
+tempPseudoParcel_FCName  = "tempPseudoParcels" 
+tempPseudoParcelPolygons = arcpy.CreateFeatureclass_management(outPath, tempPseudoParcel_FCName, "POLYGON","#","#","#",spatialRef)
+
+#GEN_PARCELS polygon feature class to store the output from the ‘For loop’ below
+#genParcels_FCName = "generalizedParcels"
+#genParcels = arcpy.CreateFeatureclass_management(outPath, genParcels_FCName, "POLYGON","#","#","#",spatialRef)
+genParcels = r"C:/AdHocProjects/MicrozoneParcelIntegrate/Automate/Pseudoparcels.gdb/generalizedParcels"
+arcpy.DeleteFeatures_management(genParcels)
+
+#query to select roads for one county (currently SLCo)
+#removes ramps and 1 side of divided highway)
+queryString = "(not DOT_RTNAME like '%N') and (not char_length(DOT_RTNAME) > 5) and COUNTY_L = '49035'"
+
+try:
+    #Create a FeatureLayer SELECT ROADS of selected roads using query string above
+    selectRoads = arcpy.MakeFeatureLayer_management(roadsFC, "Select Roads", queryString)
+except:
+    print "unable to make roads feature layer"
+
+try:
+    #BLOCKS polygon feature class to store the output for the microzone blocks
+    #blocks_FCName = r"blocks"
+    #blocks = arcpy.FeatureToPolygon_management(selectRoads, blocks_FCName)
+    blocks = r"C:/AdHocProjects/MicrozoneParcelIntegrate/Automate/Pseudoparcels.gdb/blocks"
+    blocksFLayer = arcpy.MakeFeatureLayer_management(blocks, "Blocks Layer")
+    
+except:
+    print "unable to create blocks"
+
+try:
+    #Create Parcel Centroids
+    #parcelCentroids = arcpy.FeatureToPoint_management(parcelsFC, "parcelCentroids", "CENTROID")
+    parcelCentroids = r"C:/AdHocProjects/MicrozoneParcelIntegrate/Automate/Pseudoparcels.gdb/parcelCentroids"
+    parcelCentroidsFLayer  = arcpy.MakeFeatureLayer_management(parcelCentroids, "Parcel Centroids Layer")
+    
+except:
+    print "unable to create parcel centroids"
+
+with arcpy.da.SearchCursor(blocksFLayer,['SHAPE@','OID@'],"OBJECTID > 0" ) as cursor:
+
+    for block in cursor:
+
+        #prepare points for thiessen polygon analysis
+        try:
+            select = 'OBJECTID = {}'.format(block[1])
+            print 'OBJECTID = {}'.format(block[1])
+            selectedBlock = arcpy.SelectLayerByAttribute_management(blocksFLayer,'NEW_SELECTION', select)
+            #print str(arcpy.GetCount_management(selectedBlock)) + " blocks selected"
+            #print str(arcpy.GetCount_management(parcelCentroidsFLayer)) + " parcel Centroids"
+            selectedCentroids = arcpy.SelectLayerByLocation_management(parcelCentroidsFLayer,'HAVE_THEIR_CENTER_IN', selectedBlock, '#', 'NEW_SELECTION')
+            centroidsSelectionCount = arcpy.GetCount_management(selectedCentroids)
+            #print "centroids selected = " + str(centroidsSelectionCount)
+                                                 
+            if centroidsSelectionCount == 0:
+                print "no features matched spatial and attribute criteria"
+                #no parcel centroids found in block, write block anyway??
+            else:
+                try:
+                    arcpy.DeleteFeatures_management(tempPts)
+                    arcpy.DeleteFeatures_management(tempThiessenPolygons)
+                    arcpy.DeleteFeatures_management(tempClippedThiessenPolygons)
+                    arcpy.DeleteFeatures_management(tempPseudoParcelPolygons)
+                    arcpy.DeleteFeatures_management(tempBuffer)
+                    arcpy.DeleteFeatures_management(tempBufferEnvelope)
+                    arcpy.DeleteFeatures_management(tempEnvelopePoints)
+                    arcpy.DeleteFeatures_management(tempEnvelope)      
+                    #print "temp features classes cleared"
+                except:
+                    print "nothing to delete"
+                    
+                arcpy.Append_management(selectedCentroids, tempPts, "NO_TEST")
+                print '{0} parcel centroid points written to block {1}'.format(centroidsSelectionCount, block[1])
+                tempEnvelope = arcpy.MinimumBoundingGeometry_management(selectedBlock, "tempEnvelope", "ENVELOPE", "NONE")
+                #BUFFER ENVELOPE
+                tempBuffer = arcpy.Buffer_analysis(tempEnvelope, "tempBuffer", "5000 Meters")
+                tempBufferEnvelope = arcpy.MinimumBoundingGeometry_management(tempBuffer, "tempBufferEnvelope", "ENVELOPE", "NONE")
+                tempEnvelopePoints = arcpy.FeatureVerticesToPoints_management(tempBufferEnvelope, "tempEnvelopePoints", "ALL")
+                arcpy.Append_management(tempEnvelopePoints, tempPts, "NO_TEST")
+                
+        except:
+            print "unable to prepare thiessen points"
+
+        #create pseudo parcels
+        try:
+            arcpy.CreateThiessenPolygons_analysis(tempPts, tempThiessenPolygons)
+        except:
+            print "unable to prepare thiessen polygons"
+
+        #clip to microzone blocks
+        try:
+            tempClippedThiessenPolygons = arcpy.Intersect_analysis([tempThiessenPolygons, selectedBlock], "tempClippedThiessenPolygons")                                        
+        except:
+            print "unable to clip pseudo parcels to blocks"
+
+        #assign parcel attributes using spatial overlay
+        try:
+            tempPseudoParcelPolygons = arcpy.SpatialJoin_analysis(tempClippedThiessenPolygons, selectedCentroids, "tempPseudoParcelPolygons", "JOIN_ONE_TO_ONE")                                                                    
+        except:
+            print "unable to assign parcel attributes to pseudo parcels"
+
+        #save this block of pseudo polygons to output feature class
+        try:
+            arcpy.Append_management(tempPseudoParcelPolygons, genParcels, "NO_TEST")
+        except:
+            print "unable to copy pseudo polygons"
